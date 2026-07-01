@@ -288,6 +288,52 @@ app.post('/api/app-admin/reject', requireAdminJWT, async (req, res) => {
   res.json({ success: true });
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+//  PROFILS PARTAGÉS
+//  GET    /api/profiles               → liste (membres approuvés)
+//  POST   /api/app-admin/profiles     → ajouter un profil (admin)
+//  DELETE /api/app-admin/profiles/:id → supprimer un profil (admin)
+// ════════════════════════════════════════════════════════════════════════════
+
+function requireValidJWT(req, res, next) {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
+  if (!token) return res.status(401).json({ error: 'Non authentifié.' });
+  try {
+    const payload = jwt.verify(token, JWT_SECRET);
+    const user = db.getUser(payload.discordId);
+    if (!user || user.status !== 'approved') return res.status(403).json({ error: 'Accès non autorisé.' });
+    req.discordId = payload.discordId;
+    next();
+  } catch {
+    return res.status(401).json({ error: 'Session invalide.' });
+  }
+}
+
+app.get('/api/profiles', requireValidJWT, (req, res) => {
+  res.json({ profiles: db.listProfiles() });
+});
+
+app.post('/api/app-admin/profiles', requireAdminJWT, (req, res) => {
+  const { name, description, version, downloadUrl, game } = req.body;
+  if (!name || !downloadUrl) return res.status(400).json({ error: 'name et downloadUrl sont requis.' });
+  const profile = db.addProfile({
+    name,
+    description: description || '',
+    version:     version || '1.0',
+    downloadUrl,
+    game:        game || 'ETS2',
+    addedBy:     req.adminDiscordId
+  });
+  res.json({ success: true, profile });
+});
+
+app.delete('/api/app-admin/profiles/:id', requireAdminJWT, (req, res) => {
+  const ok = db.deleteProfile(req.params.id);
+  if (!ok) return res.status(404).json({ error: 'Profil introuvable.' });
+  res.json({ success: true });
+});
+
 // ─── HTML affiché après la connexion Discord ──────────────────────────────────
 function renderStatusPage(user) {
   const messages = {

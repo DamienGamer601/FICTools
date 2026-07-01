@@ -78,5 +78,28 @@ function clearOldStates(maxAgeMs = 30 * 60 * 1000) {
 
 module.exports = {
   upsertUser, getUser, listUsers, setUserStatus,
-  setPendingState, getPendingState, clearOldStates
+  setPendingState, getPendingState, clearOldStates,
+
+  // ── Profils partagés ────────────────────────────────────────────────────────
+  listProfiles() {
+    return Object.values(read().profiles || {})
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  },
+
+  addProfile(profile) {
+    const db = read();
+    if (!db.profiles) db.profiles = {};
+    const id = require('crypto').randomUUID();
+    db.profiles[id] = { id, ...profile, createdAt: new Date().toISOString() };
+    write(db);
+    return db.profiles[id];
+  },
+
+  deleteProfile(id) {
+    const db = read();
+    if (!db.profiles || !db.profiles[id]) return false;
+    delete db.profiles[id];
+    write(db);
+    return true;
+  }
 };
