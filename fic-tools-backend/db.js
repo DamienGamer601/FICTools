@@ -1,85 +1,93 @@
 // ════════════════════════════════════════════════════════════════════════════
-//  db.js — Stockage simple basé sur un fichier JSON
-//  (suffisant pour une whitelist VTC ; pas fait pour des milliers d'écritures/s)
+//  db.js — Stockage persistant MongoDB Atlas
+//  Remplace le fichier JSON local (qui se réinitialise à chaque redéploiement
+//  sur Render plan gratuit).
+//  Même API publique que l'ancienne version — aucun autre fichier à modifier.
 // ════════════════════════════════════════════════════════════════════════════
 
-const fs   = require('fs');
-const path = require('path');
+const { MongoClient } = require('mongodb');
 
-const DB_FILE = path.join(__dirname, 'data', 'db.json');
-
-function ensureDb() {
-  fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
-  if (!fs.existsSync(DB_FILE)) {
-    fs.writeFileSync(DB_FILE, JSON.stringify({ users: {}, pendingStates: {} }, null, 2));
-  }
+const MONGODB_URI = process.env.MONGODB_URI;
+if (!MONGODB_URI) {
+  console.error('❌ MONGODB_URI manquant dans les variables d\'environnement.');
+  process.exit(1);
 }
 
-function read() {
-  ensureDb();
-  return JSON.parse(fs.readFileSync(DB_FILE, 'utf8'));
-}
+let client;
+let db;
 
-function write(data) {
-  fs.writeFileSync(DB_FILE, JSON.stringify(data, null, 2));
+async function connect() {
+  if (db) return db;
+  client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  db = client.db('fic-tools');
+
+  // Index unique sur discordId pour éviter les doublons
+  await db.collection('users').createIndex({ discordId: 1 }, { unique: true });
+  // Index TTL sur pendingStates : expiration automatique après 30 minutes
+  await db.collection('pendingStates').createIndex(
+    { createdAt: 1 },
+    { expireAfterSeconds: 1800 }
+  );
+
+  console.log('✅ MongoDB connecté.');
+  return db;
 }
 
 // ── Users ──────────────────────────────────────────────────────────────────
-// user = { discordId, username, avatar, status: 'pending'|'approved'|'rejected', createdAt, updatedAt }
-
-function upsertUser(discordId, fields) {
-  const db = read();
-  const existing = db.users[discordId];
-  db.users[discordId] = {
-    discordId,
-    status: 'pending',
-    createdAt: new Date().toISOString(),
-    ...existing,
-    ...fields,
-    updatedAt: new Date().toISOString()
+async function upsertUser(discordId, fields) {
+  const col = (await connect()).collection('users');
+  const now = new Date().toISOString();
+  const update = {
+    $set:         { ...fields, updatedAt: now },
+    $setOnInsert: { discordId, status: 'pending', createdAt: now }
   };
-  write(db);
-  return db.users[discordId];
+  const res = await col.findOneAndUpdate(
+    { discordId },
+    update,
+    { upsert: true, returnDocument: 'after' }
+  );
+  return res;
 }
 
-function getUser(discordId) {
-  return read().users[discordId] || null;
+async function getUser(discordId) {
+  const col = (await connect()).collection('users');
+  return col.findOne({ discordId }, { projection: { _id: 0 } });
 }
 
-function listUsers(statusFilter = null) {
-  const users = Object.values(read().users);
-  return statusFilter ? users.filter(u => u.status === statusFilter) : users;
+async function listUsers(statusFilter = null) {
+  const col = (await connect()).collection('users');
+  const query = statusFilter ? { status: statusFilter } : {};
+  return col.find(query, { projection: { _id: 0 } }).toArray();
 }
 
-function setUserStatus(discordId, status) {
-  const db = read();
-  if (!db.users[discordId]) return null;
-  db.users[discordId].status = status;
-  db.users[discordId].updatedAt = new Date().toISOString();
-  write(db);
-  return db.users[discordId];
+async function setUserStatus(discordId, status) {
+  const col = (await connect()).collection('users');
+  const res = await col.findOneAndUpdate(
+    { discordId },
+    { $set: { status, updatedAt: new Date().toISOString() } },
+    { returnDocument: 'after', projection: { _id: 0 } }
+  );
+  return res;
 }
 
-// ── Pending login states (link between the OAuth flow and the Electron app) ─
-// pendingStates[state] = { discordId, createdAt }
-
-function setPendingState(state, discordId) {
-  const db = read();
-  db.pendingStates[state] = { discordId, createdAt: new Date().toISOString() };
-  write(db);
+// ── Pending login states ─────────────────────────────────────────────────────
+async function setPendingState(state, discordId) {
+  const col = (await connect()).collection('pendingStates');
+  await col.updateOne(
+    { state },
+    { $set: { state, discordId, createdAt: new Date() } },
+    { upsert: true }
+  );
 }
 
-function getPendingState(state) {
-  return read().pendingStates[state] || null;
+async function getPendingState(state) {
+  const col = (await connect()).collection('pendingStates');
+  return col.findOne({ state }, { projection: { _id: 0 } });
 }
 
-function clearOldStates(maxAgeMs = 30 * 60 * 1000) {
-  const db = read();
-  const now = Date.now();
-  for (const [state, entry] of Object.entries(db.pendingStates)) {
-    if (now - new Date(entry.createdAt).getTime() > maxAgeMs) delete db.pendingStates[state];
-  }
-  write(db);
+async function clearOldStates() {
+  // Géré automatiquement par l'index TTL MongoDB (expireAfterSeconds: 1800)
 }
 
 module.exports = {
