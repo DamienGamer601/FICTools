@@ -1,6 +1,6 @@
 // ════════════════════════════════════════════════════════════════════════════
 //  server.js — Backend FIC Tools
-//  OAuth2 Discord + whitelist persistante (MongoDB Atlas)
+//  OAuth2 Discord + whitelist d'accès manuelle (approuvée via BotGhost)
 // ════════════════════════════════════════════════════════════════════════════
 
 require('dotenv').config();
