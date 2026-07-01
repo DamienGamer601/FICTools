@@ -142,9 +142,12 @@ app.get('/api/verify', async (req, res) => {
 });
 
 // ─── Webhook Discord (notification nouvelle demande) ──────────────────────────
+// ─── Webhook : envoie la notification ET stocke l'ID du message ──────────────
 async function notifyNewRequest(user) {
   if (!DISCORD_WEBHOOK_URL) return;
-  await fetch(DISCORD_WEBHOOK_URL, {
+
+  // ?wait=true → Discord renvoie le message créé avec son ID
+  const res = await fetch(`${DISCORD_WEBHOOK_URL}?wait=true`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
@@ -157,6 +160,27 @@ async function notifyNewRequest(user) {
       }]
     })
   });
+
+  if (res.ok) {
+    const data = await res.json();
+    // Stocke l'ID du message dans le profil utilisateur
+    await db.upsertUser(user.discordId, { webhookMessageId: data.id });
+  }
+}
+
+// ─── Supprime le message webhook après une action (approuver/refuser/révoquer) ─
+async function deleteWebhookMessage(discordId) {
+  if (!DISCORD_WEBHOOK_URL) return;
+  const user = await db.getUser(discordId);
+  if (!user?.webhookMessageId) return;
+
+  const msgId = user.webhookMessageId;
+  // Efface l'ID stocké en premier pour éviter les doublons en cas d'erreur réseau
+  await db.upsertUser(discordId, { webhookMessageId: null });
+
+  await fetch(`${DISCORD_WEBHOOK_URL}/messages/${msgId}`, {
+    method: 'DELETE'
+  }).catch(() => {}); // silencieux si le message a déjà été supprimé manuellement
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -169,6 +193,7 @@ app.post('/api/admin/approve', requireAdminKey, async (req, res) => {
   const user = await db.getUser(discordId);
   if (!user) return res.status(404).json({ error: "Ce membre ne s'est pas encore connecté à FIC Tools." });
   await db.setUserStatus(discordId, 'approved');
+  await deleteWebhookMessage(discordId);
   res.json({ success: true, message: `${user.username} a été approuvé.` });
 });
 
@@ -178,6 +203,7 @@ app.post('/api/admin/reject', requireAdminKey, async (req, res) => {
   const user = await db.getUser(discordId);
   if (!user) return res.status(404).json({ error: "Ce membre ne s'est pas encore connecté à FIC Tools." });
   await db.setUserStatus(discordId, 'rejected');
+  await deleteWebhookMessage(discordId);
   res.json({ success: true, message: `${user.username} a été refusé.` });
 });
 
@@ -187,6 +213,7 @@ app.post('/api/admin/revoke', requireAdminKey, async (req, res) => {
   const user = await db.getUser(discordId);
   if (!user) return res.status(404).json({ error: "Ce membre ne s'est pas encore connecté à FIC Tools." });
   await db.setUserStatus(discordId, 'pending');
+  await deleteWebhookMessage(discordId);
   res.json({ success: true, message: `Accès de ${user.username} révoqué.` });
 });
 
@@ -235,6 +262,7 @@ app.post('/api/app-admin/approve', requireAdminJWT, async (req, res) => {
   const user = await db.getUser(discordId);
   if (!user) return res.status(404).json({ error: 'Membre introuvable.' });
   await db.setUserStatus(discordId, 'approved');
+  await deleteWebhookMessage(discordId);
   res.json({ success: true });
 });
 
@@ -245,6 +273,7 @@ app.post('/api/app-admin/revoke', requireAdminJWT, async (req, res) => {
   const user = await db.getUser(discordId);
   if (!user) return res.status(404).json({ error: 'Membre introuvable.' });
   await db.setUserStatus(discordId, 'pending');
+  await deleteWebhookMessage(discordId);
   res.json({ success: true });
 });
 
@@ -255,6 +284,7 @@ app.post('/api/app-admin/reject', requireAdminJWT, async (req, res) => {
   const user = await db.getUser(discordId);
   if (!user) return res.status(404).json({ error: 'Membre introuvable.' });
   await db.setUserStatus(discordId, 'rejected');
+  await deleteWebhookMessage(discordId);
   res.json({ success: true });
 });
 
